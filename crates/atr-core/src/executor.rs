@@ -1,7 +1,6 @@
 //! Executor trait for chain-specific transaction execution
 
 use async_trait::async_trait;
-use uuid::Uuid;
 
 use crate::{
     intent::TransactionIntent,

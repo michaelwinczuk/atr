@@ -3,7 +3,7 @@
 use atr_core::{
     error::{AtrError, AtrResult},
     executor::Executor,
-    intent::{IntentBatch, IntentOperation, TransactionIntent},
+    intent::{IntentOperation, TransactionIntent},
     transaction::TransactionRecord,
 };
 use serde::{Deserialize, Serialize};
@@ -135,7 +135,7 @@ fn build_compensating_intent(original: &TransactionIntent) -> AtrResult<Transact
                 amount: *amount,
             }
         }
-        IntentOperation::ContractCall { contract, .. } => {
+        IntentOperation::ContractCall { contract: _, .. } => {
             // For contract calls, the contract itself should have a rollback function
             warn!("Contract call rollback requires contract-specific logic");
             return Err(AtrError::Internal(

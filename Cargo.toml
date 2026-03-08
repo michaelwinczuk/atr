@@ -15,9 +15,9 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Agent Transaction Router Team"]
+authors = ["Michael <michael@example.com>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/agent-tx-router"
+repository = "https://github.com/michaelkernaghan/agent-tx-router"
 
 [workspace.dependencies]
 # Async runtime
@@ -75,6 +75,9 @@ hex = "0.4"
 rand = "0.8"
 bs58 = "0.5"
 dotenvy = "0.15"
+
+# OpenSSL (vendored for cross-platform builds)
+openssl = { version = "0.10", features = ["vendored"] }
 
 # Testing
 proptest = "1.4"

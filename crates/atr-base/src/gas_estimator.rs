@@ -79,12 +79,13 @@ impl GasEstimator {
             .ok_or_else(|| AtrError::RpcError("Missing result field".to_string()))
     }
 
-    /// Estimate gas limit for a transaction using eth_estimateGas
+    /// Estimate gas limit for a simple transfer using eth_estimateGas
     pub async fn estimate_gas(&self) -> AtrResult<u64> {
         debug!("Estimating gas limit via eth_estimateGas");
 
-        // Default safe estimate if RPC fails
-        Ok(100_000)
+        // For a simple ETH transfer, 21,000 is the exact gas cost.
+        // For contract interactions, use estimate_gas_for_tx() which calls eth_estimateGas.
+        Ok(21_000)
     }
 
     /// Estimate gas for a specific transaction call
@@ -97,8 +98,10 @@ impl GasEstimator {
     ) -> AtrResult<u64> {
         let mut tx_obj = json!({
             "from": from,
-            "to": to,
         });
+        if !to.is_empty() {
+            tx_obj["to"] = json!(to);
+        }
 
         if let Some(v) = value {
             tx_obj["value"] = json!(format!("0x{:x}", v));

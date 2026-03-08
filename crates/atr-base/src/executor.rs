@@ -151,10 +151,15 @@ impl Executor for BaseExecutor {
             Some(format!("0x{}", hex::encode(&calldata)))
         };
 
-        let sim_result = self
-            .gas_estimator
-            .eth_call(&sender, &to_str, value, calldata_hex.as_deref())
-            .await;
+        // For deploys (no `to` address), skip eth_call simulation and go straight to gas estimation
+        let is_deploy = to_str.is_empty();
+        let sim_result = if is_deploy {
+            Ok(String::new())
+        } else {
+            self.gas_estimator
+                .eth_call(&sender, &to_str, value, calldata_hex.as_deref())
+                .await
+        };
 
         match sim_result {
             Ok(_) => {
@@ -162,7 +167,7 @@ impl Executor for BaseExecutor {
                     .gas_estimator
                     .estimate_gas_for_tx(&sender, &to_str, value, calldata_hex.as_deref())
                     .await
-                    .unwrap_or(100_000);
+                    .unwrap_or(if is_deploy { 500_000 } else { 100_000 });
 
                 let base_fee = self
                     .gas_estimator
@@ -269,7 +274,7 @@ impl Executor for BaseExecutor {
             None => TxKind::Create,
         };
 
-        let mut tx = TxEip1559 {
+        let tx = TxEip1559 {
             chain_id: self.chain_id,
             nonce,
             gas_limit,
@@ -374,7 +379,7 @@ impl Executor for BaseExecutor {
     async fn cancel(&self, tx_hash: &str) -> AtrResult<String> {
         info!("Cancelling Base transaction {}", tx_hash);
 
-        let signer = self
+        let _signer = self
             .signer
             .as_ref()
             .ok_or_else(|| AtrError::ConfigError("Signer not configured".to_string()))?;

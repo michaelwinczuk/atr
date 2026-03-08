@@ -21,3 +21,4 @@ async-trait = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
 bs58 = { workspace = true }
+openssl = { workspace = true }

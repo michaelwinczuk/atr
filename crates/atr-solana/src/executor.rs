@@ -1,4 +1,5 @@
 //! Solana transaction executor
+#![allow(deprecated)] // solana-sdk v2 deprecation warnings for system_instruction module
 
 use async_trait::async_trait;
 use solana_client::rpc_client::RpcClient;
@@ -56,7 +57,7 @@ impl SolanaExecutor {
         let bytes = bs58::decode(base58_key)
             .into_vec()
             .map_err(|e| AtrError::ConfigError(format!("Invalid base58 key: {}", e)))?;
-        let keypair = Keypair::from_bytes(&bytes)
+        let keypair = Keypair::try_from(bytes.as_slice())
             .map_err(|e| AtrError::ConfigError(format!("Invalid keypair bytes: {}", e)))?;
         self.keypair = Some(keypair);
         Ok(self)

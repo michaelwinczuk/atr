@@ -46,7 +46,7 @@ impl TransactionTracker {
                 _ => EventType::StatusChecked,
             };
 
-            let event = ObservabilityEvent::new(
+            let _event = ObservabilityEvent::new(
                 id,
                 event_type,
                 status,
