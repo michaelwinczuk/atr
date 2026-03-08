@@ -23,6 +23,7 @@ pub struct AppState {
     #[cfg(feature = "solana")]
     pub solana_executor: Option<Arc<SolanaExecutor>>,
     pub base_executor: Option<Arc<BaseExecutor>>,
+    pub shape_executor: Option<Arc<BaseExecutor>>,
     pub storage: Arc<Storage>,
     pub rate_limiter: RateLimiter,
 }
@@ -91,6 +92,29 @@ impl AppState {
             Arc::new(executor)
         });
 
+        // Initialize Shape executor (OP Stack L2, chain ID 360)
+        let shape_executor = std::env::var("SHAPE_RPC_URL").ok().map(|url| {
+            info!("Configuring Shape executor: {}", url);
+            let executor = BaseExecutor::new(url.clone()).with_chain_id(360);
+
+            let executor = if let Ok(key) = std::env::var("SHAPE_PRIVATE_KEY") {
+                match executor.with_private_key(&key) {
+                    Ok(e) => {
+                        info!("Shape signing key loaded");
+                        e
+                    }
+                    Err(e) => {
+                        warn!("Failed to load Shape key: {}", e);
+                        BaseExecutor::new(url).with_chain_id(360)
+                    }
+                }
+            } else {
+                executor
+            };
+
+            Arc::new(executor)
+        });
+
         Self {
             metrics,
             tracker,
@@ -98,6 +122,7 @@ impl AppState {
             #[cfg(feature = "solana")]
             solana_executor,
             base_executor,
+            shape_executor,
             storage: Arc::new(storage),
             rate_limiter,
         }
@@ -117,6 +142,10 @@ impl AppState {
             }
             Chain::Base => self
                 .base_executor
+                .clone()
+                .map(|e| e as Arc<dyn Executor>),
+            Chain::Shape => self
+                .shape_executor
                 .clone()
                 .map(|e| e as Arc<dyn Executor>),
         }

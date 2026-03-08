@@ -46,12 +46,12 @@ impl TransactionSimulator {
                     "Solana executor not configured".to_string(),
                 ))
             }
-            Chain::Base => {
+            Chain::Base | Chain::Shape => {
                 if let Some(executor) = &self.base_executor {
                     executor.simulate(intent).await
                 } else {
                     Err(atr_core::error::AtrError::ConfigError(
-                        "Base executor not configured".to_string(),
+                        format!("{} executor not configured", intent.chain),
                     ))
                 }
             }
