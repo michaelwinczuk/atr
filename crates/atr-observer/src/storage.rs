@@ -169,6 +169,36 @@ impl Storage {
         Ok(rows.iter().map(row_to_record).collect())
     }
 
+    /// Update block number for a transaction
+    pub async fn update_transaction_block(
+        &self,
+        id: Uuid,
+        block_number: u64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE transactions SET block_number = ?, updated_at = ? WHERE id = ?")
+            .bind(block_number as i64)
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Update fee paid for a transaction
+    pub async fn update_transaction_fee(
+        &self,
+        id: Uuid,
+        fee_paid: u64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE transactions SET fee_paid = ?, updated_at = ? WHERE id = ?")
+            .bind(fee_paid as i64)
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     // --- API Key Operations ---
 
     /// Create a new API key

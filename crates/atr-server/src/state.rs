@@ -10,6 +10,8 @@ use solana_sdk::commitment_config::CommitmentConfig;
 use std::sync::Arc;
 use tracing::{info, warn};
 
+use crate::rate_limit::RateLimiter;
+
 /// Shared application state
 #[derive(Clone)]
 pub struct AppState {
@@ -19,6 +21,7 @@ pub struct AppState {
     pub solana_executor: Option<Arc<SolanaExecutor>>,
     pub base_executor: Option<Arc<BaseExecutor>>,
     pub storage: Arc<Storage>,
+    pub rate_limiter: RateLimiter,
 }
 
 impl AppState {
@@ -27,6 +30,13 @@ impl AppState {
         let metrics = Arc::new(MetricsCollector::new());
         let tracker = Arc::new(TransactionTracker::new(metrics.clone()));
         let coordinator = Arc::new(tokio::sync::Mutex::new(CrossChainCoordinator::new()));
+
+        // Rate limiter: configurable via env vars
+        let rate_limit: u32 = std::env::var("RATE_LIMIT_PER_MINUTE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let rate_limiter = RateLimiter::new(rate_limit, 60);
 
         // Initialize Solana executor
         let solana_executor = std::env::var("SOLANA_RPC_URL").ok().map(|url| {
@@ -41,7 +51,6 @@ impl AppState {
                     }
                     Err(e) => {
                         warn!("Failed to load Solana key: {}", e);
-                        // Can't recover the executor after move — recreate
                         SolanaExecutor::new(
                             std::env::var("SOLANA_RPC_URL").unwrap(),
                             CommitmentConfig::confirmed(),
@@ -85,6 +94,7 @@ impl AppState {
             solana_executor,
             base_executor,
             storage: Arc::new(storage),
+            rate_limiter,
         }
     }
 

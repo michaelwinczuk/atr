@@ -5,22 +5,29 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
-/// Priority fee estimator using recent fee data
+/// Priority fee estimator with multi-RPC failover
 pub struct PriorityFeeEstimator {
-    rpc_url: String,
+    rpc_urls: Vec<String>,
     client: Client,
 }
 
 impl PriorityFeeEstimator {
-    /// Create a new fee estimator
+    /// Create a new fee estimator.
+    /// `rpc_url` can be comma-separated for failover.
     pub fn new(rpc_url: String) -> Self {
+        let rpc_urls: Vec<String> = rpc_url
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         Self {
-            rpc_url,
+            rpc_urls,
             client: Client::new(),
         }
     }
 
-    /// Make a JSON-RPC call to the Solana node
+    /// Make a JSON-RPC call with automatic failover
     async fn rpc_call(&self, method: &str, params: Value) -> AtrResult<Value> {
         let body = json!({
             "jsonrpc": "2.0",
@@ -29,13 +36,30 @@ impl PriorityFeeEstimator {
             "params": params,
         });
 
+        let mut last_error = AtrError::RpcError("No RPC URLs configured".to_string());
+
+        for url in &self.rpc_urls {
+            match self.try_rpc_call(url, &body).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    warn!("RPC {} failed for {}: {}, trying next", url, method, e);
+                    last_error = e;
+                }
+            }
+        }
+
+        Err(last_error)
+    }
+
+    async fn try_rpc_call(&self, url: &str, body: &Value) -> AtrResult<Value> {
         let response = self
             .client
-            .post(&self.rpc_url)
-            .json(&body)
+            .post(url)
+            .json(body)
+            .timeout(std::time::Duration::from_secs(10))
             .send()
             .await
-            .map_err(|e| AtrError::RpcError(format!("HTTP error: {}", e)))?;
+            .map_err(|e| AtrError::RpcError(format!("HTTP error ({}): {}", url, e)))?;
 
         let result: Value = response
             .json()

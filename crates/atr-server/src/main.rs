@@ -1,7 +1,7 @@
 //! Agent Transaction Router HTTP server
 
 use atr_observer::Storage;
-use atr_server::{routes, state::AppState};
+use atr_server::{poller, routes, state::AppState};
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
@@ -36,9 +36,27 @@ async fn main() {
         }
     }
 
-    // Build router with auth middleware
-    let app = routes::build_router(state)
-        .layer(CorsLayer::permissive());
+    // Start background confirmation poller
+    let poll_interval: u64 = std::env::var("POLL_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let poller_state = state.clone();
+    tokio::spawn(async move {
+        poller::run_confirmation_poller(poller_state, poll_interval).await;
+    });
+
+    // Start rate limiter cleanup task (every 5 minutes)
+    let cleanup_limiter = state.rate_limiter.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            cleanup_limiter.cleanup();
+        }
+    });
+
+    // Build router
+    let app = routes::build_router(state).layer(CorsLayer::permissive());
 
     // Start server
     let port: u16 = std::env::var("PORT")

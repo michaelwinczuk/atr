@@ -264,6 +264,20 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     }))
 }
 
+/// Revoke an API key (admin endpoint)
+pub async fn revoke_api_key(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    match state.storage.revoke_api_key(&key).await {
+        Ok(()) => Ok(Json(serde_json::json!({
+            "key": key,
+            "revoked": true,
+        }))),
+        Err(e) => Err(AppError::Internal(e.to_string())),
+    }
+}
+
 /// Create a new API key (admin endpoint)
 pub async fn create_api_key(
     State(state): State<AppState>,

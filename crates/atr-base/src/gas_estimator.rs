@@ -5,22 +5,31 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
-/// Gas estimator for Base transactions
+/// Gas estimator for Base transactions with multi-RPC failover
 pub struct GasEstimator {
-    rpc_url: String,
+    /// Primary RPC URL
+    rpc_urls: Vec<String>,
     client: Client,
 }
 
 impl GasEstimator {
-    /// Create a new gas estimator
+    /// Create a new gas estimator.
+    /// The `rpc_url` can be a single URL or comma-separated list for failover.
+    /// Example: `"https://mainnet.base.org,https://base.llamarpc.com"`
     pub fn new(rpc_url: String) -> Self {
+        let rpc_urls: Vec<String> = rpc_url
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         Self {
-            rpc_url,
+            rpc_urls,
             client: Client::new(),
         }
     }
 
-    /// Make a JSON-RPC call to the Base node
+    /// Make a JSON-RPC call with automatic failover across configured RPCs
     async fn rpc_call(&self, method: &str, params: Value) -> AtrResult<Value> {
         let body = json!({
             "jsonrpc": "2.0",
@@ -29,13 +38,31 @@ impl GasEstimator {
             "params": params,
         });
 
+        let mut last_error = AtrError::RpcError("No RPC URLs configured".to_string());
+
+        for url in &self.rpc_urls {
+            match self.try_rpc_call(url, &body).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    warn!("RPC {} failed for {}: {}, trying next", url, method, e);
+                    last_error = e;
+                }
+            }
+        }
+
+        Err(last_error)
+    }
+
+    /// Attempt a single RPC call to one URL
+    async fn try_rpc_call(&self, url: &str, body: &Value) -> AtrResult<Value> {
         let response = self
             .client
-            .post(&self.rpc_url)
-            .json(&body)
+            .post(url)
+            .json(body)
+            .timeout(std::time::Duration::from_secs(10))
             .send()
             .await
-            .map_err(|e| AtrError::RpcError(format!("HTTP error: {}", e)))?;
+            .map_err(|e| AtrError::RpcError(format!("HTTP error ({}): {}", url, e)))?;
 
         let result: Value = response
             .json()

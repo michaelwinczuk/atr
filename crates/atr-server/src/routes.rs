@@ -6,7 +6,7 @@ use axum::{
     Router,
 };
 
-use crate::auth::auth_middleware;
+use crate::auth::{admin_auth_middleware, auth_middleware};
 use crate::handlers;
 use crate::state::AppState;
 
@@ -17,7 +17,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/health", get(handlers::health))
         .route("/api/v1/metrics", get(handlers::metrics));
 
-    // Protected routes — require valid X-API-Key header
+    // Protected routes — require valid X-API-Key header + rate limiting
     let protected = Router::new()
         .route("/api/v1/intents", post(handlers::submit_intent))
         .route("/api/v1/intents/:id", get(handlers::get_intent_status))
@@ -33,7 +33,9 @@ pub fn build_router(state: AppState) -> Router {
     // Admin routes — require X-Admin-Key matching ATR_ADMIN_KEY env var
     let admin = Router::new()
         .route("/admin/keys", post(handlers::create_api_key))
-        .route("/admin/keys", get(handlers::list_api_keys));
+        .route("/admin/keys", get(handlers::list_api_keys))
+        .route("/admin/keys/:key/revoke", post(handlers::revoke_api_key))
+        .route_layer(middleware::from_fn(admin_auth_middleware));
 
     public
         .merge(protected)
