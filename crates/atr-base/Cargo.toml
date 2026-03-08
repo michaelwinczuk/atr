@@ -21,3 +21,4 @@ alloy-transport = { workspace = true }
 chrono = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }
+hex = { workspace = true }

@@ -70,6 +70,10 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 # Async trait
 async-trait = "0.1"
 
+# Utilities
+hex = "0.4"
+rand = "0.8"
+
 # Testing
 proptest = "1.4"
 

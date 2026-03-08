@@ -1,6 +1,7 @@
 //! Retry engine with configurable policies
 
 use atr_core::error::{AtrError, AtrResult};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -47,7 +48,7 @@ impl RetryPolicy {
 
         let duration = if self.use_jitter {
             // Add up to 25% jitter
-            let jitter = capped * (rand::random::<f64>() * 0.25);
+            let jitter = capped * (rand::thread_rng().gen::<f64>() * 0.25);
             Duration::from_secs_f64(capped + jitter)
         } else {
             Duration::from_secs_f64(capped)
@@ -86,9 +87,18 @@ impl RetryEngine {
         Fut: std::future::Future<Output = AtrResult<T>>,
     {
         let mut attempt = 0;
+        let start = std::time::Instant::now();
 
         loop {
             debug!("Retry attempt {}/{}", attempt + 1, self.policy.max_attempts);
+
+            // Check timeout
+            if let Some(timeout) = self.policy.timeout {
+                if start.elapsed() >= timeout {
+                    warn!("Retry timeout exceeded after {:?}", start.elapsed());
+                    return Err(AtrError::RetryLimitExceeded);
+                }
+            }
 
             match operation(attempt).await {
                 Ok(result) => return Ok(result),
@@ -106,15 +116,5 @@ impl RetryEngine {
                 }
             }
         }
-    }
-}
-
-// Mock rand::random for compilation
-mod rand {
-    pub fn random<T>() -> T
-    where
-        T: Default,
-    {
-        T::default()
     }
 }

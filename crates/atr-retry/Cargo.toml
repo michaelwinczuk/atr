@@ -10,3 +10,4 @@ atr-core = { path = "../atr-core" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
+rand = { workspace = true }

@@ -1,39 +1,158 @@
 //! Priority fee estimation for Solana
 
 use atr_core::error::{AtrError, AtrResult};
-use tracing::debug;
+use reqwest::Client;
+use serde_json::{json, Value};
+use tracing::{debug, warn};
 
 /// Priority fee estimator using recent fee data
 pub struct PriorityFeeEstimator {
     rpc_url: String,
+    client: Client,
 }
 
 impl PriorityFeeEstimator {
     /// Create a new fee estimator
     pub fn new(rpc_url: String) -> Self {
-        Self { rpc_url }
+        Self {
+            rpc_url,
+            client: Client::new(),
+        }
     }
 
-    /// Estimate priority fee based on recent blocks
+    /// Make a JSON-RPC call to the Solana node
+    async fn rpc_call(&self, method: &str, params: Value) -> AtrResult<Value> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        });
+
+        let response = self
+            .client
+            .post(&self.rpc_url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AtrError::RpcError(format!("HTTP error: {}", e)))?;
+
+        let result: Value = response
+            .json()
+            .await
+            .map_err(|e| AtrError::RpcError(format!("JSON parse error: {}", e)))?;
+
+        if let Some(error) = result.get("error") {
+            return Err(AtrError::RpcError(format!("RPC error: {}", error)));
+        }
+
+        result
+            .get("result")
+            .cloned()
+            .ok_or_else(|| AtrError::RpcError("Missing result field".to_string()))
+    }
+
+    /// Estimate priority fee based on recent blocks using getRecentPrioritizationFees
     pub async fn estimate_priority_fee(&self) -> AtrResult<u64> {
-        debug!("Estimating Solana priority fee");
+        debug!("Estimating Solana priority fee via getRecentPrioritizationFees");
 
-        // TODO [Phase 2]: Implement actual priority fee estimation
-        // - Query recent blocks for fee statistics
-        // - Calculate percentile-based fee recommendation
-        // - Factor in network congestion
-        
-        // For Phase 1, return a safe default (5000 microlamports)
-        Ok(5000)
+        let result = self
+            .rpc_call("getRecentPrioritizationFees", json!([]))
+            .await;
+
+        match result {
+            Ok(fees) => {
+                if let Some(fee_array) = fees.as_array() {
+                    if fee_array.is_empty() {
+                        debug!("No recent priority fees, using default");
+                        return Ok(5000);
+                    }
+
+                    // Collect all non-zero priority fees
+                    let mut priority_fees: Vec<u64> = fee_array
+                        .iter()
+                        .filter_map(|entry| {
+                            entry
+                                .get("prioritizationFee")
+                                .and_then(|f| f.as_u64())
+                        })
+                        .filter(|&f| f > 0)
+                        .collect();
+
+                    if priority_fees.is_empty() {
+                        debug!("All recent priority fees are zero, using minimum");
+                        return Ok(1000);
+                    }
+
+                    // Sort and take the 75th percentile for reliable inclusion
+                    priority_fees.sort_unstable();
+                    let p75_index = (priority_fees.len() as f64 * 0.75) as usize;
+                    let p75_index = p75_index.min(priority_fees.len() - 1);
+                    let recommended_fee = priority_fees[p75_index];
+
+                    // Cap at a reasonable maximum (10M microlamports)
+                    let capped = recommended_fee.min(10_000_000);
+                    debug!(
+                        "Priority fee estimate: {} microlamports (p75 of {} samples)",
+                        capped,
+                        priority_fees.len()
+                    );
+                    Ok(capped)
+                } else {
+                    warn!("Unexpected response format for getRecentPrioritizationFees");
+                    Ok(5000)
+                }
+            }
+            Err(e) => {
+                warn!("getRecentPrioritizationFees failed: {}, using default", e);
+                Ok(5000) // Safe default: 5000 microlamports
+            }
+        }
     }
 
-    /// Get current network congestion level
+    /// Get current network congestion level (0.0 = empty, 1.0 = full)
     pub async fn get_congestion_level(&self) -> AtrResult<f64> {
-        // TODO [Phase 2]: Implement congestion detection
-        // - Monitor recent block fill rates
-        // - Track transaction drop rates
-        // - Return 0.0-1.0 congestion score
-        
-        Ok(0.5) // Medium congestion default
+        debug!("Checking Solana network congestion");
+
+        // Query recent performance samples to estimate congestion
+        let result = self
+            .rpc_call("getRecentPerformanceSamples", json!([4]))
+            .await;
+
+        match result {
+            Ok(samples) => {
+                if let Some(sample_array) = samples.as_array() {
+                    if sample_array.is_empty() {
+                        return Ok(0.5);
+                    }
+
+                    // Calculate average transactions per slot vs theoretical max
+                    let total_txs: u64 = sample_array
+                        .iter()
+                        .filter_map(|s| s.get("numTransactions").and_then(|n| n.as_u64()))
+                        .sum();
+                    let total_slots: u64 = sample_array
+                        .iter()
+                        .filter_map(|s| s.get("numSlots").and_then(|n| n.as_u64()))
+                        .sum();
+
+                    if total_slots == 0 {
+                        return Ok(0.5);
+                    }
+
+                    let avg_txs_per_slot = total_txs as f64 / total_slots as f64;
+                    // Solana theoretical max ~4000 tx/slot, practical ~2000
+                    let congestion = (avg_txs_per_slot / 2000.0).min(1.0);
+                    debug!("Congestion level: {:.2} ({:.0} tx/slot)", congestion, avg_txs_per_slot);
+                    Ok(congestion)
+                } else {
+                    Ok(0.5)
+                }
+            }
+            Err(e) => {
+                warn!("getRecentPerformanceSamples failed: {}", e);
+                Ok(0.5)
+            }
+        }
     }
 }
