@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-# Build release binary
+# Build release binary with limited parallelism to reduce memory usage
+ENV CARGO_BUILD_JOBS=2
 RUN cargo build --release -p atr-server
 
 # Runtime image
