@@ -1350,7 +1350,6 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
- "solana-sdk",
  "thiserror 1.0.69",
  "uuid",
 ]

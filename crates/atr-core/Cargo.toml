@@ -12,5 +12,4 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 alloy-primitives = { workspace = true }
-solana-sdk = { workspace = true }
 async-trait = { workspace = true }

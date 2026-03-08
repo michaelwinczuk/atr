@@ -3,6 +3,7 @@
 //! Run with: cargo run -p atr-server --bin show-address
 
 use alloy::signers::local::PrivateKeySigner;
+#[cfg(feature = "solana")]
 use solana_sdk::signer::Signer;
 
 fn main() {
@@ -16,7 +17,7 @@ fn main() {
             Ok(signer) => {
                 println!("Base (EVM):");
                 println!("  Address: {}", signer.address());
-                println!("  Send Base Sepolia ETH to this address in MetaMask\n");
+                println!("  Send Base ETH to this address\n");
             }
             Err(e) => println!("Base: Failed to parse key: {}\n", e),
         }
@@ -25,6 +26,7 @@ fn main() {
     }
 
     // Solana
+    #[cfg(feature = "solana")]
     if let Ok(key) = std::env::var("SOLANA_PRIVATE_KEY") {
         match bs58::decode(&key).into_vec() {
             Ok(bytes) => {
@@ -43,7 +45,10 @@ fn main() {
             }
             Err(e) => println!("Solana: Failed to decode base58: {}\n", e),
         }
-    } else {
-        println!("Solana: SOLANA_PRIVATE_KEY not set in .env\n");
+    }
+
+    #[cfg(not(feature = "solana"))]
+    {
+        println!("Solana: not enabled (build with --features solana)\n");
     }
 }

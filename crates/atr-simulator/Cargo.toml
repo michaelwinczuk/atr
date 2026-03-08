@@ -5,9 +5,13 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = []
+solana = ["atr-solana"]
+
 [dependencies]
 atr-core = { path = "../atr-core" }
-atr-solana = { path = "../atr-solana" }
+atr-solana = { path = "../atr-solana", optional = true }
 atr-base = { path = "../atr-base" }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -7,12 +7,14 @@ use atr_core::{
     executor::Executor,
     chain::Chain,
 };
+#[cfg(feature = "solana")]
 use atr_solana::SolanaExecutor;
 use atr_base::BaseExecutor;
 use tracing::info;
 
 /// Transaction simulator that routes to chain-specific simulators
 pub struct TransactionSimulator {
+    #[cfg(feature = "solana")]
     solana_executor: Option<SolanaExecutor>,
     base_executor: Option<BaseExecutor>,
 }
@@ -20,10 +22,11 @@ pub struct TransactionSimulator {
 impl TransactionSimulator {
     /// Create a new transaction simulator
     pub fn new(
-        solana_executor: Option<SolanaExecutor>,
+        #[cfg(feature = "solana")] solana_executor: Option<SolanaExecutor>,
         base_executor: Option<BaseExecutor>,
     ) -> Self {
         Self {
+            #[cfg(feature = "solana")]
             solana_executor,
             base_executor,
         }
@@ -35,13 +38,13 @@ impl TransactionSimulator {
 
         match intent.chain {
             Chain::Solana => {
+                #[cfg(feature = "solana")]
                 if let Some(executor) = &self.solana_executor {
-                    executor.simulate(intent).await
-                } else {
-                    Err(atr_core::error::AtrError::ConfigError(
-                        "Solana executor not configured".to_string(),
-                    ))
+                    return executor.simulate(intent).await;
                 }
+                Err(atr_core::error::AtrError::ConfigError(
+                    "Solana executor not configured".to_string(),
+                ))
             }
             Chain::Base => {
                 if let Some(executor) = &self.base_executor {
