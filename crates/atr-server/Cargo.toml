@@ -27,7 +27,12 @@ rand = { workspace = true }
 hex = { workspace = true }
 bs58 = { workspace = true }
 dotenvy = { workspace = true }
+alloy = { workspace = true }
 
 [[bin]]
 name = "keygen"
 path = "src/bin/keygen.rs"
+
+[[bin]]
+name = "show-address"
+path = "src/bin/show_address.rs"
