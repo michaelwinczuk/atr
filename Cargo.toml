@@ -74,6 +74,7 @@ async-trait = "0.1"
 hex = "0.4"
 rand = "0.8"
 bs58 = "0.5"
+dotenvy = "0.15"
 
 # Testing
 proptest = "1.4"

@@ -7,6 +7,9 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() {
+    // Load .env file if present
+    dotenvy::dotenv().ok();
+
     // Initialize tracing
     tracing_subscriber::fmt::init();
 

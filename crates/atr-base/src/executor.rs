@@ -25,18 +25,32 @@ pub struct BaseExecutor {
     gas_estimator: GasEstimator,
     nonce_manager: NonceManager,
     signer: Option<PrivateKeySigner>,
+    chain_id: u64,
 }
 
 impl BaseExecutor {
-    /// Create a new Base executor
+    /// Create a new Base executor.
+    /// Auto-detects chain ID from RPC URL (sepolia = 84532, mainnet = 8453).
     pub fn new(rpc_url: String) -> Self {
+        let chain_id = if rpc_url.contains("sepolia") {
+            84532 // Base Sepolia
+        } else {
+            8453 // Base mainnet
+        };
         let gas_estimator = GasEstimator::new(rpc_url);
         let nonce_manager = NonceManager::new();
         Self {
             gas_estimator,
             nonce_manager,
             signer: None,
+            chain_id,
         }
+    }
+
+    /// Override the chain ID
+    pub fn with_chain_id(mut self, chain_id: u64) -> Self {
+        self.chain_id = chain_id;
+        self
     }
 
     /// Set the sender address (derived from signer if signer is set)
@@ -256,7 +270,7 @@ impl Executor for BaseExecutor {
         };
 
         let mut tx = TxEip1559 {
-            chain_id: 8453, // Base mainnet
+            chain_id: self.chain_id,
             nonce,
             gas_limit,
             max_fee_per_gas: max_fee_per_gas as u128,
