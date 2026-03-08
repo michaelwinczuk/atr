@@ -1,0 +1,76 @@
+[workspace]
+members = [
+    "crates/atr-core",
+    "crates/atr-solana",
+    "crates/atr-base",
+    "crates/atr-simulator",
+    "crates/atr-retry",
+    "crates/atr-observer",
+    "crates/atr-crosschain",
+    "crates/atr-server",
+    "crates/atr-sdk",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Agent Transaction Router Team"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/agent-tx-router"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Solana
+solana-sdk = "2"
+solana-client = "2"
+solana-transaction-status = "2"
+
+# Ethereum/Base (using alloy)
+alloy = { version = "1", features = ["full"] }
+alloy-primitives = "0.8"
+alloy-rpc-types = "1"
+alloy-provider = "1"
+alloy-transport = "1"
+
+# Web framework
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
+
+# Metrics
+prometheus-client = "0.22"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Async trait
+async-trait = "0.1"
+
+# Testing
+proptest = "1.4"
+
+

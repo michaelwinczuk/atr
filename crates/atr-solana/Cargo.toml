@@ -1,0 +1,21 @@
+[package]
+name = "atr-solana"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+atr-core = { path = "../atr-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+solana-sdk = { workspace = true }
+solana-client = { workspace = true }
+solana-transaction-status = { workspace = true }
+chrono = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }

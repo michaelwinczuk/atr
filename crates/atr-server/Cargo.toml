@@ -1,0 +1,24 @@
+[package]
+name = "atr-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+atr-core = { path = "../atr-core" }
+atr-solana = { path = "../atr-solana" }
+atr-base = { path = "../atr-base" }
+atr-simulator = { path = "../atr-simulator" }
+atr-retry = { path = "../atr-retry" }
+atr-observer = { path = "../atr-observer" }
+atr-crosschain = { path = "../atr-crosschain" }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }

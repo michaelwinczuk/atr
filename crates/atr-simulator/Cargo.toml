@@ -1,0 +1,13 @@
+[package]
+name = "atr-simulator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+atr-core = { path = "../atr-core" }
+atr-solana = { path = "../atr-solana" }
+atr-base = { path = "../atr-base" }
+tokio = { workspace = true }
+tracing = { workspace = true }
