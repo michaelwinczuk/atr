@@ -1,6 +1,12 @@
 //! Base transaction executor
 
+use alloy::consensus::{SignableTransaction, TxEip1559};
+use alloy::eips::eip2718::Encodable2718;
+use alloy::primitives::{Address, Bytes, TxKind, U256};
+use alloy::signers::local::PrivateKeySigner;
+use alloy::signers::SignerSync;
 use async_trait::async_trait;
+use std::str::FromStr;
 use tracing::{debug, info, warn};
 
 use atr_core::{
@@ -16,75 +22,97 @@ use crate::nonce_manager::NonceManager;
 
 /// Base-specific transaction executor
 pub struct BaseExecutor {
-    rpc_url: String,
     gas_estimator: GasEstimator,
     nonce_manager: NonceManager,
-    /// Hex-encoded sender address (0x...)
-    sender_address: Option<String>,
+    signer: Option<PrivateKeySigner>,
 }
 
 impl BaseExecutor {
     /// Create a new Base executor
     pub fn new(rpc_url: String) -> Self {
-        let gas_estimator = GasEstimator::new(rpc_url.clone());
+        let gas_estimator = GasEstimator::new(rpc_url);
         let nonce_manager = NonceManager::new();
         Self {
-            rpc_url,
             gas_estimator,
             nonce_manager,
-            sender_address: None,
+            signer: None,
         }
     }
 
-    /// Set the sender address for this executor
-    pub fn with_sender(mut self, address: String) -> Self {
-        self.sender_address = Some(address);
+    /// Set the sender address (derived from signer if signer is set)
+    pub fn with_sender(self, _address: String) -> Self {
+        // Sender is now derived from signer
         self
     }
 
-    /// Get the sender address or return a config error
-    fn sender(&self) -> AtrResult<&str> {
-        self.sender_address
-            .as_deref()
-            .ok_or_else(|| AtrError::ConfigError("Sender address not configured".to_string()))
+    /// Set the signing key from a hex-encoded private key
+    pub fn with_private_key(mut self, hex_key: &str) -> AtrResult<Self> {
+        let signer: PrivateKeySigner = hex_key
+            .parse()
+            .map_err(|e| AtrError::ConfigError(format!("Invalid private key: {}", e)))?;
+        self.signer = Some(signer);
+        Ok(self)
     }
 
-    /// Extract destination address from intent operation
-    fn extract_to_address(operation: &IntentOperation) -> AtrResult<String> {
+    /// Get the sender address
+    fn sender_address(&self) -> AtrResult<Address> {
+        self.signer
+            .as_ref()
+            .map(|s| s.address())
+            .ok_or_else(|| AtrError::ConfigError("Signer not configured".to_string()))
+    }
+
+    /// Get sender address as hex string
+    fn sender_hex(&self) -> AtrResult<String> {
+        Ok(format!("{}", self.sender_address()?))
+    }
+
+    /// Extract destination address from intent
+    fn extract_to_address(operation: &IntentOperation) -> AtrResult<Option<Address>> {
         match operation {
-            IntentOperation::Transfer { to, .. } => Ok(to.clone()),
-            IntentOperation::ContractCall { contract, .. } => Ok(contract.clone()),
-            IntentOperation::Swap { dex, .. } => Ok(dex.clone()),
-            IntentOperation::Deploy { .. } => {
-                // Contract deployment has no "to" address
-                Ok(String::new())
+            IntentOperation::Transfer { to, .. }
+            | IntentOperation::ContractCall { contract: to, .. }
+            | IntentOperation::Swap { dex: to, .. } => {
+                let addr = Address::from_str(to).map_err(|e| {
+                    AtrError::InvalidIntent(format!("Invalid address '{}': {}", to, e))
+                })?;
+                Ok(Some(addr))
             }
+            IntentOperation::Deploy { .. } => Ok(None), // Contract creation
             IntentOperation::Raw { .. } => Err(AtrError::InvalidIntent(
-                "Raw operations must specify destination in data".to_string(),
+                "Raw operations require destination in data".to_string(),
             )),
         }
     }
 
-    /// Extract value from intent operation
-    fn extract_value(operation: &IntentOperation) -> Option<u64> {
+    /// Extract value from intent
+    fn extract_value(operation: &IntentOperation) -> U256 {
         match operation {
-            IntentOperation::Transfer { amount, .. } => Some(*amount),
-            IntentOperation::ContractCall { value, .. } => *value,
-            _ => None,
+            IntentOperation::Transfer { amount, .. } => U256::from(*amount),
+            IntentOperation::ContractCall { value, .. } => {
+                value.map(U256::from).unwrap_or(U256::ZERO)
+            }
+            _ => U256::ZERO,
         }
     }
 
-    /// Extract calldata from intent operation
-    fn extract_calldata(operation: &IntentOperation) -> Option<String> {
+    /// Extract calldata from intent
+    fn extract_calldata(operation: &IntentOperation) -> Bytes {
         match operation {
-            IntentOperation::ContractCall { method, args, .. } => {
-                // Build basic calldata from method signature and args
-                // In production, this would use ABI encoding
-                Some(format!("0x{}", method))
+            IntentOperation::ContractCall { method, .. } => {
+                // In production, use ABI encoding. For now, treat method as hex selector.
+                let hex_str = method.trim_start_matches("0x");
+                Bytes::from(hex::decode(hex_str).unwrap_or_default())
             }
-            IntentOperation::Deploy { bytecode, .. } => Some(bytecode.clone()),
-            IntentOperation::Raw { data } => Some(format!("0x{}", hex::encode(data))),
-            _ => None,
+            IntentOperation::Deploy {
+                bytecode,
+                constructor_args: _,
+            } => {
+                let hex_str = bytecode.trim_start_matches("0x");
+                Bytes::from(hex::decode(hex_str).unwrap_or_default())
+            }
+            IntentOperation::Raw { data } => Bytes::from(data.clone()),
+            _ => Bytes::new(),
         }
     }
 }
@@ -94,30 +122,45 @@ impl Executor for BaseExecutor {
     async fn simulate(&self, intent: &TransactionIntent) -> AtrResult<SimulationResult> {
         debug!("Simulating Base transaction for intent {}", intent.id);
 
-        let sender = self.sender()?;
-        let to = Self::extract_to_address(&intent.operation)?;
-        let value = Self::extract_value(&intent.operation);
+        let sender = self.sender_hex()?;
+        let to_addr = Self::extract_to_address(&intent.operation)?;
+        let to_str = to_addr.map(|a| format!("{}", a)).unwrap_or_default();
+        let value = match &intent.operation {
+            IntentOperation::Transfer { amount, .. } => Some(*amount),
+            IntentOperation::ContractCall { value, .. } => *value,
+            _ => None,
+        };
         let calldata = Self::extract_calldata(&intent.operation);
+        let calldata_hex = if calldata.is_empty() {
+            None
+        } else {
+            Some(format!("0x{}", hex::encode(&calldata)))
+        };
 
-        // Use eth_call to simulate
         let sim_result = self
             .gas_estimator
-            .eth_call(sender, &to, value, calldata.as_deref())
+            .eth_call(&sender, &to_str, value, calldata_hex.as_deref())
             .await;
 
         match sim_result {
-            Ok(_trace) => {
-                // Estimate gas for this specific transaction
+            Ok(_) => {
                 let estimated_gas = self
                     .gas_estimator
-                    .estimate_gas_for_tx(sender, &to, value, calldata.as_deref())
+                    .estimate_gas_for_tx(&sender, &to_str, value, calldata_hex.as_deref())
                     .await
                     .unwrap_or(100_000);
 
-                let base_fee = self.gas_estimator.estimate_base_fee().await.unwrap_or(1_000_000_000);
-                let priority_fee = self.gas_estimator.estimate_priority_fee().await.unwrap_or(1_000_000_000);
+                let base_fee = self
+                    .gas_estimator
+                    .estimate_base_fee()
+                    .await
+                    .unwrap_or(1_000_000_000);
+                let priority_fee = self
+                    .gas_estimator
+                    .estimate_priority_fee()
+                    .await
+                    .unwrap_or(1_000_000_000);
                 let l1_cost = self.gas_estimator.estimate_l1_cost().await.unwrap_or(10_000);
-
                 let estimated_fee = estimated_gas * (base_fee + priority_fee) + l1_cost;
 
                 Ok(SimulationResult {
@@ -144,23 +187,49 @@ impl Executor for BaseExecutor {
     async fn submit(&self, intent: &TransactionIntent) -> AtrResult<String> {
         info!("Submitting Base transaction for intent {}", intent.id);
 
-        let sender = self.sender()?;
-        let to = Self::extract_to_address(&intent.operation)?;
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| AtrError::ConfigError("Signer not configured".to_string()))?;
+
+        let sender_hex = self.sender_hex()?;
+        let to_addr = Self::extract_to_address(&intent.operation)?;
         let value = Self::extract_value(&intent.operation);
         let calldata = Self::extract_calldata(&intent.operation);
 
-        // 1. Get nonce
-        let on_chain_nonce = self.gas_estimator.get_transaction_count(sender).await?;
-        self.nonce_manager.sync_nonce(sender, on_chain_nonce).await;
-        let nonce = self.nonce_manager.get_next_nonce(sender);
+        // Get nonce
+        let on_chain_nonce = self
+            .gas_estimator
+            .get_transaction_count(&sender_hex)
+            .await?;
+        self.nonce_manager.sync_nonce(&sender_hex, on_chain_nonce).await;
+        let nonce = self.nonce_manager.get_next_nonce(&sender_hex);
 
-        // 2. Estimate fees
+        // Estimate fees
+        let to_str = to_addr.map(|a| format!("{}", a)).unwrap_or_default();
+        let value_u64 = match &intent.operation {
+            IntentOperation::Transfer { amount, .. } => Some(*amount),
+            IntentOperation::ContractCall {
+                value: v, ..
+            } => *v,
+            _ => None,
+        };
+        let calldata_hex = if calldata.is_empty() {
+            None
+        } else {
+            Some(format!("0x{}", hex::encode(&calldata)))
+        };
+
         let gas_limit = self
             .gas_estimator
-            .estimate_gas_for_tx(sender, &to, value, calldata.as_deref())
+            .estimate_gas_for_tx(&sender_hex, &to_str, value_u64, calldata_hex.as_deref())
             .await
             .unwrap_or(100_000);
-        let base_fee = self.gas_estimator.estimate_base_fee().await.unwrap_or(1_000_000_000);
+        let base_fee = self
+            .gas_estimator
+            .estimate_base_fee()
+            .await
+            .unwrap_or(1_000_000_000);
         let priority_fee = self
             .gas_estimator
             .estimate_priority_fee()
@@ -168,78 +237,77 @@ impl Executor for BaseExecutor {
             .unwrap_or(1_000_000_000);
 
         // Check fee cap
-        let estimated_fee = gas_limit * (base_fee + priority_fee);
+        let max_fee_per_gas = base_fee.saturating_mul(2) + priority_fee; // 2x base fee headroom
+        let estimated_total = gas_limit * max_fee_per_gas;
         if let Some(max_fee) = intent.max_fee {
-            if estimated_fee > max_fee {
-                // Reset nonce since we're not submitting
-                self.nonce_manager.reset_nonce(sender, nonce);
+            if estimated_total > max_fee {
+                self.nonce_manager.reset_nonce(&sender_hex, nonce);
                 return Err(AtrError::InvalidIntent(format!(
                     "Estimated fee {} exceeds max fee {}",
-                    estimated_fee, max_fee
+                    estimated_total, max_fee
                 )));
             }
         }
 
-        // 3. Build EIP-1559 transaction
-        // Note: In production, this would use alloy's TransactionRequest + signing
-        // For now, we build the raw transaction parameters and log them
-        info!(
-            "Built EIP-1559 tx: nonce={}, gas_limit={}, max_fee_per_gas={}, max_priority_fee={}, to={}, value={:?}",
-            nonce, gas_limit, base_fee + priority_fee, priority_fee, to, value
-        );
+        // Build EIP-1559 transaction
+        let to = match to_addr {
+            Some(addr) => TxKind::Call(addr),
+            None => TxKind::Create,
+        };
 
-        // The actual signing and submission requires a private key.
-        // In production: use alloy's SignerMiddleware or a KMS signer.
-        // For now, if we have raw transaction data, submit it directly.
-        match &intent.operation {
-            IntentOperation::Raw { data } => {
-                let raw_hex = format!("0x{}", hex::encode(data));
-                let tx_hash = self.gas_estimator.send_raw_transaction(&raw_hex).await?;
-                info!("Transaction submitted: {}", tx_hash);
-                Ok(tx_hash)
-            }
-            _ => {
-                // Without a signer, we can't sign and submit arbitrary transactions
-                // Return the transaction parameters as a structured error so the caller
-                // can sign externally
-                Err(AtrError::ConfigError(format!(
-                    "Transaction built but signer not configured. Params: nonce={}, gas={}, to={}, chain_id=8453",
-                    nonce, gas_limit, to
-                )))
-            }
-        }
+        let mut tx = TxEip1559 {
+            chain_id: 8453, // Base mainnet
+            nonce,
+            gas_limit,
+            max_fee_per_gas: max_fee_per_gas as u128,
+            max_priority_fee_per_gas: priority_fee as u128,
+            to,
+            value,
+            input: calldata,
+            access_list: Default::default(),
+        };
+
+        // Sign the transaction
+        let sig = signer
+            .sign_hash_sync(&tx.signature_hash())
+            .map_err(|e| AtrError::Internal(format!("Signing failed: {}", e)))?;
+        let signed = tx.into_signed(sig);
+
+        // RLP encode as EIP-2718 envelope
+        let mut encoded = Vec::new();
+        signed.encode_2718(&mut encoded);
+        let raw_hex = format!("0x{}", hex::encode(&encoded));
+
+        // Submit
+        let tx_hash = self.gas_estimator.send_raw_transaction(&raw_hex).await?;
+        info!("Transaction submitted: {}", tx_hash);
+        Ok(tx_hash)
     }
 
     async fn check_status(&self, tx_hash: &str) -> AtrResult<TransactionRecord> {
         debug!("Checking status for Base transaction {}", tx_hash);
 
         let receipt = self.gas_estimator.get_transaction_receipt(tx_hash).await?;
-
         let mut record = TransactionRecord::new(uuid::Uuid::new_v4(), Chain::Base);
         record.tx_hash = Some(tx_hash.to_string());
 
         match receipt {
             Some(receipt_data) => {
-                // Parse receipt status
                 let status_hex = receipt_data
                     .get("status")
                     .and_then(|s| s.as_str())
                     .unwrap_or("0x0");
-
                 let success = status_hex == "0x1";
 
                 if success {
-                    // Get block number
-                    if let Some(block_hex) = receipt_data.get("blockNumber").and_then(|b| b.as_str())
+                    if let Some(block_hex) =
+                        receipt_data.get("blockNumber").and_then(|b| b.as_str())
                     {
-                        let block_num = u64::from_str_radix(
-                            block_hex.trim_start_matches("0x"),
-                            16,
-                        )
-                        .unwrap_or(0);
+                        let block_num =
+                            u64::from_str_radix(block_hex.trim_start_matches("0x"), 16)
+                                .unwrap_or(0);
                         record.block_number = Some(block_num);
 
-                        // Check confirmations
                         let current_block =
                             self.gas_estimator.get_block_number().await.unwrap_or(0);
                         let confirmations = current_block.saturating_sub(block_num);
@@ -253,18 +321,10 @@ impl Executor for BaseExecutor {
                         record.update_status(TransactionStatus::Confirmed);
                     }
 
-                    // Parse gas used
-                    if let Some(gas_hex) =
-                        receipt_data.get("gasUsed").and_then(|g| g.as_str())
-                    {
-                        record.units_used = u64::from_str_radix(
-                            gas_hex.trim_start_matches("0x"),
-                            16,
-                        )
-                        .ok();
+                    if let Some(gas_hex) = receipt_data.get("gasUsed").and_then(|g| g.as_str()) {
+                        record.units_used =
+                            u64::from_str_radix(gas_hex.trim_start_matches("0x"), 16).ok();
                     }
-
-                    // Parse effective gas price for fee calculation
                     if let Some(price_hex) = receipt_data
                         .get("effectiveGasPrice")
                         .and_then(|p| p.as_str())
@@ -282,7 +342,6 @@ impl Executor for BaseExecutor {
                 }
             }
             None => {
-                // No receipt yet — still pending
                 record.update_status(TransactionStatus::Submitted);
             }
         }
@@ -301,14 +360,15 @@ impl Executor for BaseExecutor {
     async fn cancel(&self, tx_hash: &str) -> AtrResult<String> {
         info!("Cancelling Base transaction {}", tx_hash);
 
-        let sender = self.sender()?;
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| AtrError::ConfigError("Signer not configured".to_string()))?;
 
-        // To cancel on EVM: submit a 0-value self-transfer with the same nonce but higher gas
-        // We need to find the original nonce from the pending transaction
-        // For now, this requires the Raw intent path (pre-signed replacement tx)
-
-        Err(AtrError::ConfigError(
-            "Cancellation requires a signer. Submit a pre-signed replacement transaction via Raw intent.".to_string(),
+        // To cancel: send a 0-value self-transfer with same nonce but higher gas
+        // We need to know the original nonce — for now, return error
+        Err(AtrError::Internal(
+            "Cancellation requires the original transaction nonce. Use check_status to monitor instead.".to_string(),
         ))
     }
 }

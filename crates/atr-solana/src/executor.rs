@@ -8,7 +8,8 @@ use solana_sdk::{
     instruction::{AccountMeta, Instruction},
     message::Message,
     pubkey::Pubkey,
-    signature::Signature,
+    signature::{Keypair, Signature},
+    signer::Signer,
     system_instruction,
     transaction::Transaction,
 };
@@ -29,7 +30,7 @@ use crate::fee_estimator::PriorityFeeEstimator;
 pub struct SolanaExecutor {
     rpc_client: RpcClient,
     fee_estimator: PriorityFeeEstimator,
-    commitment: CommitmentConfig,
+    keypair: Option<Keypair>,
 }
 
 impl SolanaExecutor {
@@ -40,46 +41,64 @@ impl SolanaExecutor {
         Self {
             rpc_client,
             fee_estimator,
-            commitment,
+            keypair: None,
         }
+    }
+
+    /// Set the signing keypair
+    pub fn with_keypair(mut self, keypair: Keypair) -> Self {
+        self.keypair = Some(keypair);
+        self
+    }
+
+    /// Set keypair from base58-encoded private key
+    pub fn with_keypair_base58(mut self, base58_key: &str) -> AtrResult<Self> {
+        let bytes = bs58::decode(base58_key)
+            .into_vec()
+            .map_err(|e| AtrError::ConfigError(format!("Invalid base58 key: {}", e)))?;
+        let keypair = Keypair::from_bytes(&bytes)
+            .map_err(|e| AtrError::ConfigError(format!("Invalid keypair bytes: {}", e)))?;
+        self.keypair = Some(keypair);
+        Ok(self)
+    }
+
+    /// Get the fee payer pubkey
+    fn fee_payer(&self) -> AtrResult<Pubkey> {
+        self.keypair
+            .as_ref()
+            .map(|kp| kp.pubkey())
+            .ok_or_else(|| AtrError::ConfigError("Keypair not configured".to_string()))
     }
 
     /// Build a Solana transaction from intent
     fn build_transaction(&self, intent: &TransactionIntent) -> AtrResult<Transaction> {
+        let fee_payer = self.fee_payer()?;
         let mut instructions = Vec::new();
 
-        // Add priority fee instruction based on network conditions
-        // We use a default here; the caller should set compute budget after simulation
+        // Add compute budget instructions for priority fees
         instructions.push(ComputeBudgetInstruction::set_compute_unit_limit(200_000));
         instructions.push(ComputeBudgetInstruction::set_compute_unit_price(5000));
 
         match &intent.operation {
             IntentOperation::Transfer { to, amount } => {
-                let from_pubkey = Pubkey::default(); // Placeholder — will be set by signer
                 let to_pubkey = Pubkey::from_str(to).map_err(|e| {
                     AtrError::InvalidIntent(format!("Invalid Solana address '{}': {}", to, e))
                 })?;
-
                 instructions.push(system_instruction::transfer(
-                    &from_pubkey,
+                    &fee_payer,
                     &to_pubkey,
                     *amount,
                 ));
             }
             IntentOperation::ContractCall {
                 contract,
-                method: _,
                 args,
-                value: _,
+                ..
             } => {
                 let program_id = Pubkey::from_str(contract).map_err(|e| {
-                    AtrError::InvalidIntent(format!(
-                        "Invalid program address '{}': {}",
-                        contract, e
-                    ))
+                    AtrError::InvalidIntent(format!("Invalid program address: {}", e))
                 })?;
 
-                // Parse accounts and data from args
                 let data = if let Some(data_str) = args.get("data").and_then(|d| d.as_str()) {
                     hex::decode(data_str.trim_start_matches("0x")).map_err(|e| {
                         AtrError::InvalidIntent(format!("Invalid instruction data: {}", e))
@@ -88,70 +107,62 @@ impl SolanaExecutor {
                     Vec::new()
                 };
 
-                let accounts: Vec<AccountMeta> = if let Some(accts) =
-                    args.get("accounts").and_then(|a| a.as_array())
-                {
-                    accts
-                        .iter()
-                        .filter_map(|a| {
-                            let pubkey_str = a.get("pubkey")?.as_str()?;
-                            let pubkey = Pubkey::from_str(pubkey_str).ok()?;
-                            let is_signer = a
-                                .get("isSigner")
-                                .and_then(|s| s.as_bool())
-                                .unwrap_or(false);
-                            let is_writable = a
-                                .get("isWritable")
-                                .and_then(|w| w.as_bool())
-                                .unwrap_or(false);
-                            if is_writable {
-                                Some(AccountMeta::new(pubkey, is_signer))
-                            } else {
-                                Some(AccountMeta::new_readonly(pubkey, is_signer))
-                            }
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                let accounts: Vec<AccountMeta> =
+                    if let Some(accts) = args.get("accounts").and_then(|a| a.as_array()) {
+                        accts
+                            .iter()
+                            .filter_map(|a| {
+                                let pubkey = Pubkey::from_str(a.get("pubkey")?.as_str()?).ok()?;
+                                let is_signer = a
+                                    .get("isSigner")
+                                    .and_then(|s| s.as_bool())
+                                    .unwrap_or(false);
+                                let is_writable = a
+                                    .get("isWritable")
+                                    .and_then(|w| w.as_bool())
+                                    .unwrap_or(false);
+                                Some(if is_writable {
+                                    AccountMeta::new(pubkey, is_signer)
+                                } else {
+                                    AccountMeta::new_readonly(pubkey, is_signer)
+                                })
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
 
                 instructions.push(Instruction::new_with_bytes(program_id, &data, accounts));
             }
             IntentOperation::Raw { data } => {
-                // Raw instruction data: first 32 bytes = program ID, rest = instruction data
                 if data.len() < 32 {
                     return Err(AtrError::InvalidIntent(
                         "Raw data must contain at least 32 bytes for program ID".to_string(),
                     ));
                 }
                 let program_id = Pubkey::try_from(&data[..32]).map_err(|e| {
-                    AtrError::InvalidIntent(format!("Invalid program ID in raw data: {}", e))
+                    AtrError::InvalidIntent(format!("Invalid program ID: {}", e))
                 })?;
-                let ix_data = &data[32..];
                 instructions.push(Instruction::new_with_bytes(
                     program_id,
-                    ix_data,
+                    &data[32..],
                     Vec::new(),
                 ));
             }
             IntentOperation::Swap { .. } => {
                 return Err(AtrError::InvalidIntent(
-                    "Swap operations require DEX-specific instruction building (Jupiter, Raydium, etc.)".to_string(),
+                    "Swap operations require DEX-specific instruction building".to_string(),
                 ));
             }
             IntentOperation::Deploy { .. } => {
                 return Err(AtrError::InvalidIntent(
-                    "Contract deployment on Solana requires BPF loader instructions — use ContractCall with deploy program".to_string(),
+                    "Use ContractCall with BPF loader for Solana deployments".to_string(),
                 ));
             }
         }
 
-        // Build unsigned transaction with a placeholder blockhash
-        // The actual recent blockhash should be set right before signing
-        let message = Message::new(&instructions, None);
-        let transaction = Transaction::new_unsigned(message);
-
-        Ok(transaction)
+        let message = Message::new(&instructions, Some(&fee_payer));
+        Ok(Transaction::new_unsigned(message))
     }
 }
 
@@ -160,10 +171,8 @@ impl Executor for SolanaExecutor {
     async fn simulate(&self, intent: &TransactionIntent) -> AtrResult<SimulationResult> {
         debug!("Simulating Solana transaction for intent {}", intent.id);
 
-        // Build transaction
         let transaction = self.build_transaction(intent)?;
 
-        // Simulate transaction
         match self.rpc_client.simulate_transaction(&transaction) {
             Ok(response) => {
                 if let Some(err) = response.value.err {
@@ -201,10 +210,25 @@ impl Executor for SolanaExecutor {
     async fn submit(&self, intent: &TransactionIntent) -> AtrResult<String> {
         info!("Submitting Solana transaction for intent {}", intent.id);
 
-        // Build transaction
-        let transaction = self.build_transaction(intent)?;
+        let keypair = self
+            .keypair
+            .as_ref()
+            .ok_or_else(|| AtrError::ConfigError("Keypair not configured for signing".to_string()))?;
 
-        // Send transaction
+        let mut transaction = self.build_transaction(intent)?;
+
+        // Get recent blockhash for transaction validity
+        let blockhash = self
+            .rpc_client
+            .get_latest_blockhash()
+            .map_err(|e| AtrError::RpcError(format!("Failed to get blockhash: {}", e)))?;
+
+        // Sign the transaction
+        transaction
+            .try_sign(&[keypair], blockhash)
+            .map_err(|e| AtrError::Internal(format!("Signing failed: {}", e)))?;
+
+        // Send
         match self.rpc_client.send_transaction(&transaction) {
             Ok(signature) => {
                 info!("Transaction submitted: {}", signature);
@@ -227,16 +251,13 @@ impl Executor for SolanaExecutor {
                     record.update_status(TransactionStatus::Failed);
                     record.error = Some(format!("{:?}", e));
                 } else {
-                    // Check confirmation status
                     match self.rpc_client.get_transaction(
                         &signature,
                         solana_transaction_status::UiTransactionEncoding::Json,
                     ) {
                         Ok(tx) => {
                             record.update_status(TransactionStatus::Finalized);
-                            // Extract slot as block number equivalent
                             record.block_number = Some(tx.slot);
-                            // Extract fee from meta
                             if let Some(meta) = tx.transaction.meta {
                                 record.fee_paid = Some(meta.fee);
                             }
@@ -262,10 +283,9 @@ impl Executor for SolanaExecutor {
     }
 
     async fn cancel(&self, _tx_hash: &str) -> AtrResult<String> {
-        // Solana doesn't support transaction cancellation in the traditional sense
-        // Once submitted, transactions either succeed or fail/expire
         Err(AtrError::Internal(
-            "Transaction cancellation not supported on Solana. Transactions expire after ~60s if not confirmed.".to_string(),
+            "Solana transactions cannot be cancelled. They expire after ~60s if not confirmed."
+                .to_string(),
         ))
     }
 }
