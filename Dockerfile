@@ -2,21 +2,18 @@ FROM rust:1.82-bookworm AS builder
 
 WORKDIR /app
 
-# Install OpenSSL dev
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-
 # Copy workspace
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-# Build release binary (Base only — no Solana for lighter build)
+# Build release binary (Base only — no Solana)
 ENV CARGO_BUILD_JOBS=2
 RUN cargo build --release -p atr-server
 
 # Runtime image
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/atr-server /usr/local/bin/atr-server
 
